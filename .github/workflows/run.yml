@@ -2,15 +2,6 @@ name: Run bots
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"
-
-concurrency:
-  group: run-bots
-  cancel-in-progress: false
-
-permissions:
-  contents: read
 
 jobs:
   run:
@@ -22,15 +13,4 @@ jobs:
         with:
           node-version: 22
       - run: npm install
-      - name: Create token files
-        env:
-          T1: ${{ secrets.TOKEN_TXT }}
-          T2: ${{ secrets.TOKEN_TELEGRAM_TXT }}
-        run: |
-          printf '%s\n' "$T1" > token.txt
-          printf '%s\n' "$T2" > tokentelgram.txt
-      - name: Run script for 5h50m
-        run: timeout 350m npm start || true
-      - name: Delete token files
-        if: always()
-        run: rm -f token.txt tokentelgram.txt
+      - run: timeout 350m npm start || true

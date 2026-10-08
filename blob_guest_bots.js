@@ -4,9 +4,9 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
-const dgram = require('dgram');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const { SocksClient } = require('socks');
 
@@ -30,8 +30,9 @@ const RECONNECT_MS = 0;
 const HANDSHAKE_TIMEOUT_MS = 25000;
 const TRACK_INTERVAL_MS = 20;
 const TRACK_TARGET_TTL_MS = 1500;
-const TRACK_BRIDGE_HOST = process.env.TRACK_BRIDGE_HOST || '127.0.0.1';
-const TRACK_BRIDGE_PORT = Number(process.env.TRACK_BRIDGE_PORT || 48959);
+const TRACK_URL_FILE = path.join(__dirname, 'xy.txt');
+const TRACK_HTTP_POLL_MS = 50;
+const TRACK_HTTP_TIMEOUT_MS = 1500;
 const PROXY_CHECK_TIMEOUT_MS = 7000;
 const MAX_BOTS_PER_PROXY = 5;
 const FFA_RECONNECT_MS = 0;
@@ -1448,7 +1449,9 @@ class BotManager {
     this.trackTargetName = '';
     this.phoneTrackEnabled = false;
     this.externalTrackLast = null;
-    this.trackBridgeSocket = null;
+    this.trackBridgeTimer = null;
+    this.trackHttpInFlight = false;
+    this.trackHttpUrl = '';
     this.splitSpamEnabled = false;
     this.messageEnabled = false;
     this.messageIntervalMs = DEFAULT_MESSAGE_INTERVAL_MS;
@@ -1459,39 +1462,80 @@ class BotManager {
   }
 
   startTrackBridge() {
-    if (this.trackBridgeSocket) return;
+    if (this.trackBridgeTimer) return;
+    this.trackBridgeTimer = setInterval(() => {
+      this.pollTrackHttp().catch(() => {});
+    }, TRACK_HTTP_POLL_MS);
+    this.pollTrackHttp().catch(() => {});
+  }
 
-    const socket = dgram.createSocket('udp4');
-    this.trackBridgeSocket = socket;
+  readTrackUrl() {
+    try {
+      if (!fs.existsSync(TRACK_URL_FILE)) return '';
+      const raw = fs.readFileSync(TRACK_URL_FILE, 'utf8').trim();
+      if (!raw) return '';
+      const first = raw.split(/\r?\n/).map(v => v.trim()).find(Boolean) || '';
+      const u = new URL(first);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+      return u.toString();
+    } catch (_) {
+      return '';
+    }
+  }
 
-    socket.on('error', err => {
-      console.log(`[TRACK] bridge error: ${err.message}`);
+  requestTrackHttp(urlString) {
+    return new Promise((resolve, reject) => {
+      let u;
+      try { u = new URL(urlString); } catch (e) { reject(e); return; }
+      const lib = u.protocol === 'https:' ? https : http;
+      const req = lib.get(u, { headers: { 'accept': 'application/json', 'cache-control': 'no-cache' } }, res => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+          body += chunk;
+          if (body.length > 65536) req.destroy(new Error('track response too large'));
+        });
+        res.on('end', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`track HTTP ${res.statusCode}`));
+            return;
+          }
+          try { resolve(JSON.parse(body)); }
+          catch (_) { reject(new Error('invalid track JSON')); }
+        });
+      });
+      req.setTimeout(TRACK_HTTP_TIMEOUT_MS, () => req.destroy(new Error('track HTTP timeout')));
+      req.on('error', reject);
     });
+  }
 
-    socket.on('message', msg => {
-      let data;
-      try { data = JSON.parse(msg.toString('utf8')); } catch (_) { return; }
-      if (!data || data.type !== 'game_coords') return;
+  async pollTrackHttp() {
+    if (!this.phoneTrackEnabled || !this.trackEnabled || this.trackHttpInFlight) return;
+    const url = this.readTrackUrl();
+    if (!url) return;
+    if (url !== this.trackHttpUrl) {
+      this.trackHttpUrl = url;
+      console.log(`[TRACK] xy.txt URL loaded: ${url}`);
+    }
+    this.trackHttpInFlight = true;
+    try {
+      const data = await this.requestTrackHttp(url);
       if (!this.phoneTrackEnabled || !this.trackEnabled) return;
-
+      if (!data || data.type !== 'game_coords') return;
       if (data.alive === false) {
         this.externalTrackLast = { alive: false, at: Date.now() };
         for (const bot of this.bots) bot.setExternalTrackTarget({ alive: false });
         return;
       }
-
       const x = Number(data.x);
       const y = Number(data.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-
       const target = { x, y, alive: true, at: Date.now() };
       this.externalTrackLast = target;
       for (const bot of this.bots) bot.setExternalTrackTarget(target);
-    });
-
-    socket.bind(TRACK_BRIDGE_PORT, TRACK_BRIDGE_HOST, () => {
-      console.log(`[TRACK] phone bridge listening on ${TRACK_BRIDGE_HOST}:${TRACK_BRIDGE_PORT}`);
-    });
+    } finally {
+      this.trackHttpInFlight = false;
+    }
   }
 
   createBots(count) {
@@ -1650,8 +1694,9 @@ class BotManager {
       bot.setTrackTarget(target);
     }
   }
-  stopTrack() {     this.phoneTrackEnabled = false;
-this.trackEnabled = false; this.trackTargetName = ''; this.trackLastTarget = null; for (const bot of this.bots) bot.stopTrack(); }
+  stopTrack() {
+    this.phoneTrackEnabled = false;
+this.trackEnabled = false; this.trackTargetName = ''; this.trackLastTarget = null; this.trackHttpUrl = ''; for (const bot of this.bots) bot.stopTrack(); }
   setSplitSpam(enabled = true) {
     this.splitSpamEnabled = !!enabled;
     for (const bot of this.bots) bot.setSplitSpam(this.splitSpamEnabled);

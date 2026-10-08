@@ -10,7 +10,6 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: write
   contents: read
 
 jobs:
@@ -35,8 +34,3 @@ jobs:
       - name: Delete token files
         if: always()
         run: rm -f token.txt tokentelgram.txt
-      - name: Start next run
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run run.yml --repo ${{ github.repository }}

@@ -1,0 +1,14 @@
+{
+  "name": "blob-guest-bots",
+  "version": "1.0.0",
+  "private": true,
+  "main": "blob_guest_bots.js",
+  "scripts": {
+    "start": "node blob_guest_bots.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "socks-proxy-agent": "^8.0.5",
+    "socks": "^2.8.7"
+  }
+}
